@@ -1,19 +1,22 @@
 package reactor.core.scheduler;
 
+import java.util.Collection;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Phaser;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 import io.micrometer.core.instrument.FunctionCounter;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import junitparams.JUnitParamsRunner;
+import junitparams.Parameters;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
-import reactor.core.Disposable;
-import reactor.core.Disposables;
+import org.junit.runner.RunWith;
 
 import reactor.core.Disposable;
 import reactor.core.Disposables;
@@ -23,12 +26,11 @@ import static org.assertj.core.api.Assertions.offset;
 import static org.awaitility.Awaitility.await;
 import static reactor.core.scheduler.SchedulerMetricDecorator.TAG_SCHEDULER_ID;
 
+@RunWith(JUnitParamsRunner.class)
 public class SchedulersMetricsTest {
 
 	final SimpleMeterRegistry simpleMeterRegistry = new SimpleMeterRegistry();
 	final Disposable.Composite toCleanUp = Disposables.composite();
-
-	final Disposable.Composite disposables = Disposables.composite();
 
 	@Before
 	public void setUp() {
@@ -38,7 +40,6 @@ public class SchedulersMetricsTest {
 
 	@After
 	public void tearDown() {
-		disposables.dispose();
 		Schedulers.disableMetrics();
 		Metrics.globalRegistry.forEachMeter(Metrics.globalRegistry::remove);
 		Metrics.removeRegistry(simpleMeterRegistry);
@@ -182,11 +183,27 @@ public class SchedulersMetricsTest {
 				.containsExactly("foo");
 	}
 
-	@Test
-    public void shouldReportExecutorMetrics() {
-		Scheduler scheduler = Schedulers.newParallel("A", 1);
-		disposables.add(scheduler);
+	private Object[] metricsSchedulers() {
+		return new Object[] {
+				new Object[] {
+						(Supplier<Scheduler>) () -> Schedulers.newParallel("A", 1),
+						"PARALLEL"
+				},
+				new Object[] {
+						(Supplier<Scheduler>) () -> Schedulers.newElastic("A"),
+						"ELASTIC"
+				},
+				new Object[] {
+						(Supplier<Scheduler>) () -> Schedulers.newCapped(4, "A"),
+						"CAPPED"
+				}
+		};
+	}
 
+	@Test
+	@Parameters(method = "metricsSchedulers")
+    public void shouldReportExecutorMetrics(Supplier<Scheduler> schedulerSupplier, String type) {
+		Scheduler scheduler = autoCleanup(schedulerSupplier.get());
 		final int taskCount = 3;
 
 		for (int i = 0; i < taskCount; i++) {
@@ -194,29 +211,25 @@ public class SchedulersMetricsTest {
 			});
 		}
 
-		FunctionCounter counter = simpleMeterRegistry
+		Collection<FunctionCounter> counters = simpleMeterRegistry
 				.find("executor.completed")
 				.tag(TAG_SCHEDULER_ID, scheduler.toString())
-				.functionCounter();
+				.functionCounters();
 
 		// Use Awaitility because "count" is reported "eventually"
 		await().atMost(5, TimeUnit.SECONDS).untilAsserted(() -> {
-			assertThat(counter)
-					.isNotNull()
-					.satisfies(it -> {
-						assertThat(it.count())
-								.as("count")
-								.isEqualTo(taskCount);
-					});
+			assertThat(counters.stream()
+			                   .mapToDouble(FunctionCounter::count)
+			                   .sum())
+					.isEqualTo(taskCount);
 		});
     }
 
+    @Parameters(method = "metricsSchedulers")
 	@Test(timeout = 10_000)
-	public void shouldReportExecutionTimes() {
-		Scheduler scheduler = Schedulers.newParallel("A", 1);
-		disposables.add(scheduler);
-
-		final int taskCount = 3;
+	public void shouldReportExecutionTimes(Supplier<Scheduler> schedulerSupplier, String type) {
+	    Scheduler scheduler = autoCleanup(schedulerSupplier.get());
+	    final int taskCount = 3;
 
 		Phaser phaser = new Phaser(1);
 		for (int i = 1; i <= taskCount; i++) {
@@ -234,21 +247,20 @@ public class SchedulersMetricsTest {
 		}
 		phaser.arriveAndAwaitAdvance();
 
-		Timer timer = simpleMeterRegistry
+		Collection<Timer> timers = simpleMeterRegistry
 				.find("executor")
 				.tag(TAG_SCHEDULER_ID, scheduler.toString())
-				.timer();
+				.timers();
 
 		// Use Awaitility because "count" is reported "eventually"
 		await().atMost(5, TimeUnit.SECONDS).untilAsserted(() -> {
-			assertThat(timer)
-					.isNotNull()
-					.satisfies(it -> {
-						assertThat(it.count()).as("count").isEqualTo(taskCount);
-						assertThat(it.max(TimeUnit.MILLISECONDS))
-								.as("min")
-								.isEqualTo(60, offset(10.0d));
-					});
+			assertThat(timers.stream()
+			                 .reduce(0d, (time, timer) -> time + timer.totalTime(TimeUnit.MILLISECONDS), Double::sum))
+					.as("total durations")
+					.isEqualTo(60 + 40 + 20, offset(10.0d));
+			assertThat(timers.stream().mapToLong(Timer::count).sum())
+					.as("count")
+					.isEqualTo(taskCount);
 		});
 	}
 }

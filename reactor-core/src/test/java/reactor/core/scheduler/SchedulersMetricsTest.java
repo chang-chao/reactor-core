@@ -225,7 +225,7 @@ public class SchedulersMetricsTest {
 		});
     }
 
-    @Parameters(method = "metricsSchedulers")
+	@Parameters(method = "metricsSchedulers")
 	@Test(timeout = 10_000)
 	public void shouldReportExecutionTimes(Supplier<Scheduler> schedulerSupplier, String type) {
 	    Scheduler scheduler = autoCleanup(schedulerSupplier.get());

@@ -1044,11 +1044,12 @@ public abstract class Schedulers {
 
 		@Override
 		public String toString() {
-			return cached.toString();
+			return "Schedulers." + key + "()";
 		}
 
 		@Override
 		public Object scanUnsafe(Attr key) {
+			if (Attr.NAME == key) return toString();
 			return Scannable.from(cached).scanUnsafe(key);
 		}
 
